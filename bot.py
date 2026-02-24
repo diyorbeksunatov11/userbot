@@ -9,43 +9,35 @@ from telethon import TelegramClient, events
 from google import genai
 
 # =========================================================
-# KOYEB / ENV SOZLAMALAR
+# MINIMAL SOZLAMALAR (faqat 3 ta ENV kerak)
 # =========================================================
-# Koyeb -> Environment variables:
+# Terminal / Koyeb / VPS'da quyidagilarni qo'ying:
 # API_ID=...
 # API_HASH=...
 # GEMINI_API_KEY=...
-# MODEL_NAME=models/gemini-2.5-flash      (optional)
-# SESSION_NAME=shaxsiy_sessiya_pro        (optional)
-# CONTACTS_ONLY=0                         (0 = hamma private chat, 1 = faqat kontaktlar)
-# MEMORY_LEN=10                           (optional)
-# DEBUG_ECHO_ONLY=0                       (1 = AI o'rniga test reply qaytaradi)
 
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-MODEL_NAME = os.getenv("MODEL_NAME", "models/gemini-2.5-flash")
 
-SESSION_NAME = os.getenv("SESSION_NAME", "shaxsiy_sessiya_pro")
-CONTACTS_ONLY = os.getenv("CONTACTS_ONLY", "0") == "1"   # default: 0 (muhim)
-MEMORY_LEN = int(os.getenv("MEMORY_LEN", "10"))
-DEBUG_ECHO_ONLY = os.getenv("DEBUG_ECHO_ONLY", "0") == "1"
+# Kod ichidagi default sozlamalar (ENV shart emas)
+MODEL_NAME = "models/gemini-2.5-flash"
+SESSION_NAME = "shaxsiy_sessiya_pro"
+CONTACTS_ONLY = False   # False = hamma private chatga javob beradi
+MEMORY_LEN = 10
+DEBUG_ECHO_ONLY = False  # True qilsangiz AI o'rniga test reply qaytaradi
 
 # =========================================================
 # GLOBAL HOLAT
 # =========================================================
 memory: dict[int, deque] = {}
 
-if not GEMINI_API_KEY:
-    ai_client = None
-else:
-    ai_client = genai.Client(api_key=GEMINI_API_KEY)
-
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 tg_client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 
 # =========================================================
-# HEALTH SERVER (Koyeb Web Service uchun)
+# HEALTH SERVER (Koyeb uchun foydali, terminalda ham zarar qilmaydi)
 # =========================================================
 async def start_health_server():
     port = int(os.environ.get("PORT", "8000"))
@@ -83,16 +75,16 @@ def ensure_memory(user_id: int):
 
 
 def detect_mime(event, file_path: str, media_type: str) -> str:
-    # 1) Telegram'dan kelgan mime_type
+    # 1) Telegram document mime_type bo'lsa - eng ishonchli
     if getattr(event, "document", None) and getattr(event.document, "mime_type", None):
         return event.document.mime_type
 
-    # 2) extension orqali
+    # 2) Fayl extension orqali aniqlash
     mime, _ = mimetypes.guess_type(file_path)
     if mime:
         return mime
 
-    # 3) fallback
+    # 3) Fallback
     if media_type == "image":
         return "image/jpeg"
     if media_type == "audio":
@@ -103,11 +95,8 @@ def detect_mime(event, file_path: str, media_type: str) -> str:
 
 async def gemini_generate_text(contents):
     """
-    Gemini sync API chaqiruvini asyncio loopni bloklamaslik uchun thread ichida ishlatamiz.
+    Gemini sync chaqiruvini asyncio loopni bloklamaslik uchun thread ichida ishlatamiz.
     """
-    if ai_client is None:
-        raise RuntimeError("GEMINI_API_KEY topilmadi. ENV ga GEMINI_API_KEY qo'ying.")
-
     def _run():
         resp = ai_client.models.generate_content(
             model=MODEL_NAME,
@@ -145,19 +134,15 @@ def build_audio_prompt(user_name: str, history_context: str) -> str:
         f"Hozir {user_name} bilan gaplashyapsan.\n\n"
         f"Suhbat tarixi:\n{history_context}\n\n"
         f"Foydalanuvchi voice/audio yubordi. "
-        f"Audio mazmunini tushunib, o'zbek tilida qisqa va mantiqiy javob ber. "
-        f"Javob juda uzun bo'lmasin."
+        f"Audio mazmunini tushunib, o'zbek tilida qisqa va mantiqiy javob ber."
     )
 
 
 async def upload_file_to_gemini(file_path: str, mime_type: str):
     """
     google-genai SDK versiyasiga qarab upload signature farq qilishi mumkin.
-    Shu sabab bir nechta variant sinab ko'riladi.
+    3 xil variant sinab ko'riladi.
     """
-    if ai_client is None:
-        raise RuntimeError("GEMINI_API_KEY topilmadi.")
-
     def _run():
         # Variant A
         try:
@@ -171,18 +156,16 @@ async def upload_file_to_gemini(file_path: str, mime_type: str):
         except TypeError:
             pass
 
-        # Variant C (oxirgi urinish)
+        # Variant C
         return ai_client.files.upload(file=file_path)
 
     return await asyncio.to_thread(_run)
 
 
 async def handle_media_with_gemini(event, user_id: int, user_name: str, media_type: str) -> str:
-    """
-    media_type = 'image' | 'audio'
-    """
     tmp_path = None
     try:
+        # Kengaytma MIME aniqlash uchun muhim
         suffix = ".jpg" if media_type == "image" else ".ogg"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp_path = tmp.name
@@ -199,7 +182,6 @@ async def handle_media_with_gemini(event, user_id: int, user_name: str, media_ty
 
         logging.info("MEDIA | path=%s | mime=%s | type=%s", file_path, mime_type, media_type)
 
-        # DEBUG rejim: AI'ga bormasdan test javob
         if DEBUG_ECHO_ONLY:
             return f"Test ({media_type}) qabul qilindi ✅"
 
@@ -207,8 +189,8 @@ async def handle_media_with_gemini(event, user_id: int, user_name: str, media_ty
         uploaded_file = await upload_file_to_gemini(file_path, mime_type)
 
         prompt = build_image_prompt(user_name, history_context) if media_type == "image" else build_audio_prompt(user_name, history_context)
-
         reply_text = await gemini_generate_text([prompt, uploaded_file])
+
         return reply_text or "Tushunmadim, yana bir marta yuborib ko'ring."
 
     except Exception as e:
@@ -223,11 +205,8 @@ async def handle_media_with_gemini(event, user_id: int, user_name: str, media_ty
                 pass
 
 
-def safe_name(sender):
-    try:
-        return (getattr(sender, "first_name", None) or "Do'stim").strip()
-    except Exception:
-        return "Do'stim"
+def safe_name(sender) -> str:
+    return (getattr(sender, "first_name", None) or "Do'stim").strip()
 
 
 # =========================================================
@@ -235,7 +214,6 @@ def safe_name(sender):
 # =========================================================
 @tg_client.on(events.NewMessage(incoming=True))
 async def pro_handler(event):
-    # DEBUG: xabar keldimi yo'qmi
     logging.info(
         "NEW MSG | private=%s out=%s text=%s photo=%s doc=%s chat_id=%s",
         event.is_private,
@@ -247,7 +225,6 @@ async def pro_handler(event):
     )
 
     if not event.is_private or event.out:
-        logging.info("SKIP | not private or outgoing")
         return
 
     sender = await event.get_sender()
@@ -261,7 +238,6 @@ async def pro_handler(event):
         user_name,
     )
 
-    # Faqat kontaktlar rejimi (default endi OFF)
     if CONTACTS_ONLY and not getattr(sender, "contact", False):
         logging.info("SKIP | CONTACTS_ONLY=1 and sender.contact=False")
         return
@@ -269,13 +245,10 @@ async def pro_handler(event):
     ensure_memory(user_id)
 
     try:
-        # =====================================================
-        # 1) TEXT
-        # =====================================================
+        # 1) MATN
         if event.text:
             logging.info("TEXT | %s -> %s", user_name, event.text)
 
-            # DEBUG rejim: AI ishlatmasdan test
             if DEBUG_ECHO_ONLY:
                 await event.reply("Test reply ishladi ✅")
                 return
@@ -290,17 +263,12 @@ async def pro_handler(event):
                     reply_text = "Kechirasiz, javob tayyor bo'lmadi."
 
                 memory[user_id].append(f"Sen: {reply_text}")
-
-                delay = min(len(reply_text) * 0.04, 4)
-                await asyncio.sleep(delay)
-
+                await asyncio.sleep(min(len(reply_text) * 0.04, 4))
                 await event.reply(reply_text)
                 logging.info("AI(TEXT) | %s", reply_text)
             return
 
-        # =====================================================
-        # 2) IMAGE
-        # =====================================================
+        # 2) RASM
         is_image = bool(event.photo)
         if not is_image and event.document and getattr(event.document, "mime_type", ""):
             is_image = event.document.mime_type.startswith("image/")
@@ -312,35 +280,25 @@ async def pro_handler(event):
             async with tg_client.action(user_id, "typing"):
                 reply_text = await handle_media_with_gemini(event, user_id, user_name, "image")
                 memory[user_id].append(f"Sen: {reply_text}")
-
-                delay = min(len(reply_text) * 0.03, 4)
-                await asyncio.sleep(delay)
-
+                await asyncio.sleep(min(len(reply_text) * 0.03, 4))
                 await event.reply(reply_text)
                 logging.info("AI(IMAGE) | %s", reply_text)
             return
 
-        # =====================================================
         # 3) VOICE / AUDIO
-        # =====================================================
-        # Telegram voice'ni aniqlashda event.voice/event.audio har doim bo'lmasligi mumkin.
-        # Shuning uchun document mime_type + document attributesni ham tekshiramiz.
         is_audio = False
-
         if event.document and getattr(event.document, "mime_type", ""):
             mime = event.document.mime_type
-            if mime.startswith("audio/"):
-                is_audio = True
-            # Ba'zi voice notelar "application/ogg" bo'lib keladi
-            if mime in ("application/ogg", "application/octet-stream"):
-                # document attributes ichidan voice ni topishga urinamiz
+            if mime.startswith("audio/") or mime in ("application/ogg", "application/octet-stream"):
+                # document attribute orqali voice/audio ekanini tekshirish
                 for attr in getattr(event.document, "attributes", []) or []:
-                    attr_name = attr.__class__.__name__.lower()
-                    if "audio" in attr_name:
+                    if "audio" in attr.__class__.__name__.lower():
                         is_audio = True
                         break
+                # ba'zi audio fayllarda attributes ham bo'ladi, lekin mime audio/ bo'lsa to'g'ridan true
+                if mime.startswith("audio/"):
+                    is_audio = True
 
-        # Ba'zi Telethon versiyalarida event.voice/event.audio bo'lishi mumkin
         if not is_audio and (getattr(event, "voice", None) or getattr(event, "audio", None)):
             is_audio = True
 
@@ -351,33 +309,20 @@ async def pro_handler(event):
             async with tg_client.action(user_id, "typing"):
                 reply_text = await handle_media_with_gemini(event, user_id, user_name, "audio")
                 memory[user_id].append(f"Sen: {reply_text}")
-
-                delay = min(len(reply_text) * 0.03, 5)
-                await asyncio.sleep(delay)
-
+                await asyncio.sleep(min(len(reply_text) * 0.03, 5))
                 await event.reply(reply_text)
                 logging.info("AI(AUDIO) | %s", reply_text)
             return
 
-        # =====================================================
-        # 4) BOSHQA MEDIA
-        # =====================================================
         logging.info("SKIP | unsupported media type")
-        # test uchun xohlasangiz bu line'ni oching:
-        # await event.reply("Bu turdagi fayl hozircha qo'llab-quvvatlanmaydi.")
         return
 
-    except Exception as e:
+    except Exception:
         logging.exception("HANDLER ERROR")
-        if "429" in str(e):
-            logging.warning("Rate limit 429. 30s kutamiz...")
-            await asyncio.sleep(30)
-        else:
-            # Foydalanuvchiga sokin xabar
-            try:
-                await event.reply("Xatolik bo'ldi. Keyinroq yana urinib ko'ring.")
-            except Exception:
-                pass
+        try:
+            await event.reply("Xatolik bo'ldi. Keyinroq yana urinib ko'ring.")
+        except Exception:
+            pass
 
 
 # =========================================================
@@ -389,15 +334,12 @@ async def main():
         format="%(asctime)s | %(levelname)s | %(message)s"
     )
 
-    # Minimal config check
-    if not API_ID or not API_HASH:
-        raise RuntimeError("ENV xato: API_ID va API_HASH shart.")
+    if not API_ID or not API_HASH or not GEMINI_API_KEY:
+        raise RuntimeError("API_ID, API_HASH, GEMINI_API_KEY ni ENV ga qo'ying.")
 
-    # Health server (Koyeb Web Service uchun)
     health_server = await start_health_server()
 
-    # Telegram client start
-    await tg_client.start()
+    await tg_client.start()  # Session bo'lmasa shu yerda login so'raydi (terminalda)
     me = await tg_client.get_me()
 
     print("--- --- --- --- --- --- ---")
@@ -405,8 +347,8 @@ async def main():
     print(f"🧠 XOTIRA: {MEMORY_LEN}")
     print(f"🛡 FILTR: {'Faqat kontaktlar' if CONTACTS_ONLY else 'Hamma private chat'}")
     print(f"🧪 DEBUG_ECHO_ONLY: {DEBUG_ECHO_ONLY}")
-    print(f"🖼 IMAGE: Yoqilgan")
-    print(f"🎤 VOICE: Yoqilgan")
+    print("🖼 IMAGE: Yoqilgan")
+    print("🎤 VOICE: Yoqilgan")
     print(f"🌐 Health: 0.0.0.0:{os.environ.get('PORT', '8000')}")
     print("--- --- --- --- --- --- ---")
 
