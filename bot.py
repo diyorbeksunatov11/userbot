@@ -22,7 +22,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # Kod ichidagi default sozlamalar (ENV shart emas)
 MODEL_NAME = "models/gemini-2.5-flash"
-SESSION_NAME = "shaxsiy_sessiya_pro"
+SESSION_NAME = "shaxsiy_sessiya"
 CONTACTS_ONLY = False   # False = hamma private chatga javob beradi
 MEMORY_LEN = 10
 DEBUG_ECHO_ONLY = False  # True qilsangiz AI o'rniga test reply qaytaradi
@@ -364,3 +364,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n👋 Bot o'chirildi.")
+
