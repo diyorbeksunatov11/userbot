@@ -221,7 +221,6 @@ async def gemini_text(prompt: str) -> str:
             except Exception as e:
                 last_err = e
                 msg = str(e).lower()
-                # rotate on rate/quota or leaked
                 if _is_rate_or_quota(msg) or _is_leaked_key(msg):
                     continue
                 raise
@@ -247,7 +246,6 @@ async def gemini_upload(file_path: str, mime_type: str):
                 client = genai.Client(api_key=key)
 
                 def _run():
-                    # SDK version differences -> 3 tries
                     try:
                         return client.files.upload(file=file_path, config={"mime_type": mime_type})
                     except TypeError:
@@ -311,7 +309,7 @@ async def _llm_delay():
     if wait > 0:
         await asyncio.sleep(wait)
 
-async def _call_openai_compat(client: OpenAI, model: str, prompt: str, extra_headers: dict | None = None) -> str:
+async def _call_openai_compat(client, model: str, prompt: str, extra_headers: dict | None = None) -> str:
     def _run():
         kwargs = {}
         if extra_headers:
@@ -325,18 +323,15 @@ async def _call_openai_compat(client: OpenAI, model: str, prompt: str, extra_hea
             **kwargs
         )
         return (r.choices[0].message.content or "").strip()
-
     return await asyncio.to_thread(_run)
 
 
 # =========================
-# Provider router:
-#   Primary Gemini,
-#   If Gemini limited => cooldown + use Groq,
-#   If Groq limited => OpenRouter,
-#   Periodically ping Gemini to see if it's back.
+# Provider router (Gemini -> Groq -> OpenRouter) + Gemini recheck
 # =========================
 async def generate_text_router(prompt: str) -> str:
+    global _last_llm_ts
+
     now = time.time()
     gstate = PROVIDER_STATE["gemini"]
 
@@ -354,12 +349,10 @@ async def generate_text_router(prompt: str) -> str:
             return await gemini_text(prompt)
         except Exception as e:
             msg = str(e).lower()
-            # If limited/leaked -> cooldown and fallback
             if _is_rate_or_quota(msg) or _is_leaked_key(msg):
                 gstate["cooldown_until"] = time.time() + GEMINI_COOLDOWN_SEC
                 gstate["next_check"] = time.time() + GEMINI_CHECK_INTERVAL_SEC
             else:
-                # Unknown errors: short cooldown to avoid hammering
                 gstate["cooldown_until"] = time.time() + 10
                 gstate["next_check"] = time.time() + GEMINI_CHECK_INTERVAL_SEC
 
@@ -369,7 +362,6 @@ async def generate_text_router(prompt: str) -> str:
             async with _llm_lock:
                 await _llm_delay()
                 txt = await _call_openai_compat(groq_client, GROQ_MODEL, prompt)
-                global _last_llm_ts
                 _last_llm_ts = time.time()
                 if txt:
                     return txt
@@ -385,7 +377,6 @@ async def generate_text_router(prompt: str) -> str:
                 await _llm_delay()
                 headers = {"HTTP-Referer": "https://example.local", "X-Title": "Telegram Userbot"}
                 txt = await _call_openai_compat(openrouter_client, OPENROUTER_MODEL, prompt, extra_headers=headers)
-                global _last_llm_ts
                 _last_llm_ts = time.time()
                 if txt:
                     return txt
@@ -401,10 +392,6 @@ async def generate_text_router(prompt: str) -> str:
 # Rolling summary (to help “memory”)
 # =========================
 async def maybe_update_summary(user_id: int):
-    """
-    Promptni shishirmaslik uchun: qisqa summary saqlaymiz.
-    Trigger: memory ichida yetarlicha satr bo'lsa.
-    """
     if len(memory.get(user_id, [])) < 8:
         return
 
@@ -419,7 +406,6 @@ async def maybe_update_summary(user_id: int):
     )
 
     try:
-        # Summary ideally via Gemini (router will pick Gemini if available)
         new_sum = await generate_text_router(sum_prompt)
         if new_sum:
             summary_memory[user_id] = new_sum.strip()
@@ -461,21 +447,18 @@ async def handle_media(event, user_id: int, user_name: str, media_type: str) -> 
 # =========================
 @tg_client.on(events.NewMessage(incoming=True))
 async def pro_handler(event):
-    # private only, incoming only
     if not event.is_private or event.out:
         return
 
     sender = await event.get_sender()
 
-    # Ignore bots
+    # Ignore bot accounts
     if IGNORE_BOTS and getattr(sender, "bot", False):
         return
 
-    # Block list
     if is_blocked(sender):
         return
 
-    # Contacts only
     if CONTACTS_ONLY and not getattr(sender, "contact", False):
         return
 
