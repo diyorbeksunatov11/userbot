@@ -35,7 +35,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 
 # Session + behavior
-SESSION_NAME = os.getenv("SESSION_NAME", "koyeb_session")
+SESSION_NAME = os.getenv("SESSION_NAME", "shaxsiy_sessiya")
 CONTACTS_ONLY = os.getenv("CONTACTS_ONLY", "0") == "1"
 MEMORY_LEN = int(os.getenv("MEMORY_LEN", "10"))
 
@@ -552,3 +552,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
